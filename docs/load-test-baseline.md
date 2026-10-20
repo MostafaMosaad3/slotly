@@ -91,3 +91,47 @@ php artisan db:seed --class=LoadTestSeeder --env=loadtest
 Both names must be slotly_load_test. The existing populated database will be
 refused. Before any deliberate reset, check its name again; never reset the
 development database to rerun this benchmark.
+## Inside InnoDB (Day 1 Step 5)
+
+Measured 2026-10-20 on MySQL 9.1.0 (WAMP), `innodb_buffer_pool_size` = 256 MB.
+
+| Table | table_rows (estimate) | data MB | index MB |
+| --- | ---: | ---: | ---: |
+| bookings | 1,481,205 | 140.7 | 212.5 |
+| customers | 246,758 | 22.6 | 5.5 |
+| services | 9,974 | 1.5 | 0.2 |
+| staff | 5,608 | 0.3 | 0.1 |
+| tenants | 1,000 | 0.1 | 0.1 |
+
+`bookings` leaf pages (`mysql.innodb_index_stats`):
+
+| Index | n_leaf_pages | size (pages) |
+| --- | ---: | ---: |
+| PRIMARY | 8,977 | 9,004 |
+| bookings_staff_id_foreign | 3,711 | 4,265 |
+| bookings_customer_id_foreign | 3,270 | 3,752 |
+| bookings_service_id_foreign | 3,089 | 3,560 |
+| bookings_tenant_id_foreign | 1,975 | 2,021 |
+
+1,490,000 rows / 8,977 leaves ≈ 166 rows per 16 KB leaf. PRIMARY plus four
+FK-created secondary indexes, none written by hand. Bookings data + indexes
+(≈ 353 MB) is larger than the 256 MB buffer pool.
+
+## First measurements (Day 1 Step 6)
+
+Two runs each, same connection. Run 1 is "first run", not a guaranteed cold
+buffer pool (MySQL was not restarted). Busy tenant 1 owns staff 1–50 and
+customers 1–5,000.
+
+| Query | Run 1 ms | Run 2 ms | Rows |
+| --- | ---: | ---: | ---: |
+| Q0 primary key (`id = 750000`) | 1.69 | 0.27 | 1 |
+| Q1 catalog (tenant 1, active, LIMIT 20) | 0.56 | 0.30 | 9 |
+| Q2 staff calendar (staff 20, 2026-10-05) | 26.05 | 3.94 | 0 |
+| Q3 customer history (customer 900) | 2.92 | 0.39 | 12 |
+| Q4 tenant dashboard (tenant 1, latest 20) | 150.64 | 154.05 | 20 |
+| Q5 `COUNT(*)` where status = completed | 2,596.42 | 854.26 | 1 (1,168,844) |
+
+Q2 returned no rows for that day; how many rows it read to find that is a Day 2 question.
+Q4 stays ~150 ms even warm, so I/O is not the cost (prediction: sorting tenant 1's 50,000 rows).
+Day 2 reads the plans behind these numbers.
