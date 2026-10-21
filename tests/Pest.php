@@ -1,5 +1,6 @@
 <?php
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -81,4 +82,39 @@ function seedTenantWithBookings(int $bookings = 0): int
     }
 
     return $tenant;
+}
+
+function seedTenantWithTwoStaff(): array
+{
+    $tenant = seedTenantWithBookings(bookings: 0);
+    $staff = (int) DB::table('staff')->where('tenant_id', $tenant)->value('id');
+
+    $otherStaff = DB::table('staff')->insertGetId([
+        'tenant_id' => $tenant,
+        'name' => 'Staff B',
+        'active' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    return [$tenant, $staff, $otherStaff];
+}
+
+function bookingAt(int $staffId, string $startsAtUtc, int $minutes = 30): int
+{
+    $tenant = (int) DB::table('staff')->where('id', $staffId)->value('tenant_id');
+    $startsAt = CarbonImmutable::parse($startsAtUtc, 'UTC');
+
+    return DB::table('bookings')->insertGetId([
+        'tenant_id' => $tenant,
+        'service_id' => DB::table('services')->where('tenant_id', $tenant)->value('id'),
+        'staff_id' => $staffId,
+        'customer_id' => DB::table('customers')->where('tenant_id', $tenant)->value('id'),
+        'starts_at' => $startsAt,
+        'ends_at' => $startsAt->addMinutes($minutes),
+        'status' => 'confirmed',
+        'price_cents' => 15_000,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
 }

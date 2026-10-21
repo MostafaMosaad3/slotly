@@ -124,3 +124,111 @@ Also noted: `whereBetween(…, '23:59:59')` is a closed interval and drops a boo
 
 - Q3 (customer history) not measured today.
 - First-run numbers are not cold: MySQL was not restarted between runs.
+
+# Day 3 — two measured indexes (2026-10-21)
+
+## Derivation (written before the migration)
+
+1. Q2 with `(staff_id, starts_at)` — sorted entries for staff 20:
+   `(20, 08-20 16:00), (20, 08-21 09:00), (20, 08-21 11:30), (20, 08-21 15:00), (20, 08-22 10:00)`.
+   One day of one staff member is one contiguous run, already in `starts_at` order.
+   The `Filter` and the `Sort` both disappear; the plan becomes a range scan plus
+   ~6 clustered lookups.
+2. Not covering for `select *` (or for `StaffCalendar`'s `id, starts_at, ends_at, status`):
+   `ends_at` and `status` live only in the clustered index. Six lookups on a hot
+   path are cheap. A covering `(staff_id, starts_at, ends_at, status)` would rewrite
+   a wider secondary entry on every insert and every status change
+   (confirmed → cancelled → completed). Decision: don't cover; revisit only if
+   lookups dominate a measurement.
+3. `ORDER BY created_at DESC` doesn't need a `DESC` index — InnoDB walks the leaf
+   chain backwards. `DESC` matters only for mixed directions.
+4. Q4's `count(*)` still visits every matching entry (50,000 for tenant 1). The new
+   index doesn't change that; Day 4 decides (`simplePaginate` or a cached total).
+
+## Migration
+
+`2026_10_07_000001_replace_bookings_fk_indexes_with_query_indexes`: adds
+`bookings_staff_starts_idx (staff_id, starts_at)` and
+`bookings_tenant_created_idx (tenant_id, created_at)`, then drops the old FK
+indexes only if they still exist.
+
+- Open transactions checked first (`information_schema.innodb_trx`): none.
+- Build time on 1,490,000 rows: **13 s** (artisan), 17 s wall including boot.
+- After migrating, `SHOW INDEX` lists the two composites and no
+  `bookings_staff_id_foreign` / `bookings_tenant_id_foreign`: MySQL dropped its
+  own FK indexes as soon as the composites could serve the FKs, so the
+  `hasIndex` guard skipped both `dropIndex` calls.
+- `down()` round-tripped on `slotly_testing`: rollback restores the two
+  single-column indexes, migrate brings the composites back.
+
+## Before / after
+
+Same SQL, same IDs, same method (warm = median of runs 2–3). `ANALYZE TABLE bookings` run after the build.
+
+| Query | Before plan | After plan | Before warm | After warm | Examined → returned | Trade-off |
+|---|---|---|---:|---:|---|---|
+| Q2 staff 20 (busy) | FK lookup + filter + sort | range scan | 3.29 ms | 0.04 ms | 1,008 → 6 ⇒ 6 → 6 | wider entry than the FK index |
+| Q2 staff 2946 (small) | FK lookup + filter + sort | range scan | 0.72 ms | 0.03 ms | 195 → 4 ⇒ 4 → 4 | same |
+| Q4 tenant 1 page | FK lookup + top-N sort | reverse index lookup | 163.5 ms | 0.28 ms | 50,000 → 15 ⇒ 15 → 15 | — |
+| Q4 tenant 500 page | FK lookup + top-N sort | reverse index lookup | 2.03 ms | 0.21 ms | 1,000 → 15 ⇒ 15 → 15 | — |
+| Q4 tenant 1 count | covering lookup | covering lookup | 23.2 ms | 20.3 ms | still 50,000 | Day 4 decides |
+| Q4 tenant 500 count | covering lookup | covering lookup | 0.33 ms | 0.27 ms | still 1,000 | — |
+
+Handler counters after: Q2 `read_key` 1 + `read_next` 6 (staff 20) / 4 (staff 2946);
+Q4 page `read_key` 1 + `read_prev` 14 (15 rows read backwards, then `Limit` stops).
+
+Plans after:
+
+```text
+Q2 staff 20
+-> Index range scan on bookings using bookings_staff_starts_idx over (staff_id = 20 AND '2025-08-21 00:00:00' <= starts_at <= '2025-08-21 23:59:59'), with index condition: (...)  (cost=4.04 rows=6) (actual time=0.0416..0.051 rows=6 loops=1)
+
+Q4 page tenant 1
+-> Limit: 15 row(s)  (cost=21267 rows=15) (actual time=0.457..0.462 rows=15 loops=1)
+    -> Index lookup on bookings using bookings_tenant_created_idx (tenant_id = 1) (reverse)  (cost=21267 rows=103616) (actual time=0.456..0.46 rows=15 loops=1)
+```
+
+`StaffCalendar::day()` (half-open `>= day AND < next day`, 4 columns) gets the
+same range scan: `read_key` 1, `read_next` 6.
+
+The busy/small gap is gone for the page and the calendar: both now cost the rows
+they return. Only the count still scales with tenant size.
+
+## Hygiene and write cost
+
+| Index | Pages before | Pages after |
+| --- | ---: | ---: |
+| PRIMARY | 9,004 | 9,004 |
+| bookings_staff_id_foreign → bookings_staff_starts_idx | 4,265 | 2,790 |
+| bookings_tenant_id_foreign → bookings_tenant_created_idx | 2,021 | 2,790 |
+| bookings_service_id_foreign | 3,560 | 3,560 |
+| bookings_customer_id_foreign | 3,752 | 3,752 |
+
+Total `index_length`: 212.5 MB → 201.4 MB. The 2-column entries are wider, but
+the old staff index was fragmented by the seeder's tenant-by-tenant inserts
+(random positions in `staff_id` order, page splits); the new ones were bulk-built
+sorted and packed. Expect them to grow toward the old density under real inserts.
+
+`sys.schema_redundant_indexes`: empty. Secondary index count stays at four.
+
+Write cost: every booking insert still touches 5 trees. A reschedule (changing
+`starts_at`, Week 9) now also moves an entry in `bookings_staff_starts_idx`;
+`created_at` never changes, so `bookings_tenant_created_idx` costs nothing after insert.
+
+Keep/remove decisions:
+
+- `bookings_staff_starts_idx` — keep (Q2; also serves the `staff_id` FK).
+- `bookings_tenant_created_idx` — keep (Q4; also serves the `tenant_id` FK).
+- `bookings_service_id_foreign`, `bookings_customer_id_foreign` — keep for the FKs; Q3 (customer history) not audited yet.
+
+## Code
+
+`App\Domain\Scheduling\StaffCalendar::day()` holds Q2, so the app and the tests run
+the same query. It uses a half-open day — `whereBetween(…, '23:59:59')` from the
+Day 2 call drops a booking at 23:59:30; the dataset in `StaffCalendarTest` covers it.
+
+## Open questions
+
+- `$dayStartUtc` is a UTC instant chosen by the caller. A tenant's "5 October" in
+  Cairo or Paris is a different UTC range, and DST days are 23 or 25 hours — Week 6.
+- Q4 `count(*)` is still 20 ms for a busy tenant on every page load — Day 4.
