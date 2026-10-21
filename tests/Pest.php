@@ -1,49 +1,84 @@
 <?php
 
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
-/*
-|--------------------------------------------------------------------------
-| Test Case
-|--------------------------------------------------------------------------
-|
-| The closure you provide to your test functions is always bound to a specific PHPUnit test
-| case class. By default, that class is "PHPUnit\Framework\TestCase". Of course, you may
-| need to change it using the "pest()" function to bind a different classes or traits.
-|
-*/
+pest()->extend(TestCase::class)->in('Feature', 'Database');
 
-pest()->extend(TestCase::class)
- // ->use(Illuminate\Foundation\Testing\RefreshDatabase::class)
-    ->in('Feature');
+expect()->extend('toRunQueries', function (int $expected) {
+    $count = 0;
+    DB::listen(function () use (&$count) {
+        $count++;
+    });
 
-/*
-|--------------------------------------------------------------------------
-| Expectations
-|--------------------------------------------------------------------------
-|
-| When you're writing tests, you often need to check that values meet certain conditions. The
-| "expect()" function gives you access to a set of "expectations" methods that you can use
-| to assert different things. Of course, you may extend the Expectation API at any time.
-|
-*/
+    ($this->value)();
 
-expect()->extend('toBeOne', function () {
-    return $this->toBe(1);
+    expect($count)->toBe($expected);
+
+    return $this;
 });
 
-/*
-|--------------------------------------------------------------------------
-| Functions
-|--------------------------------------------------------------------------
-|
-| While Pest is very powerful out-of-the-box, you may have some testing code specific to your
-| project that you don't want to repeat in every file. Here you can also expose helpers as
-| global functions to help you to reduce the number of lines of code in your test files.
-|
-*/
-
-function something()
+function seedTenantWithBookings(int $bookings = 0): int
 {
-    // ..
+    $now = now();
+    $slug = 'tenant-'.Str::lower(Str::random(8));
+
+    $tenant = DB::table('tenants')->insertGetId([
+        'name' => $slug,
+        'slug' => $slug,
+        'timezone' => 'Africa/Cairo',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $service = DB::table('services')->insertGetId([
+        'tenant_id' => $tenant,
+        'name' => 'Haircut',
+        'duration_minutes' => 30,
+        'price_cents' => 15_000,
+        'active' => true,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $staff = DB::table('staff')->insertGetId([
+        'tenant_id' => $tenant,
+        'name' => 'Staff A',
+        'active' => true,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $customer = DB::table('customers')->insertGetId([
+        'tenant_id' => $tenant,
+        'name' => 'Customer A',
+        'email' => "{$slug}@example.test",
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $rows = [];
+    for ($i = 0; $i < $bookings; $i++) {
+        $startsAt = $now->copy()->startOfHour()->addHours($i + 1);
+
+        $rows[] = [
+            'tenant_id' => $tenant,
+            'service_id' => $service,
+            'staff_id' => $staff,
+            'customer_id' => $customer,
+            'starts_at' => $startsAt,
+            'ends_at' => $startsAt->copy()->addMinutes(30),
+            'status' => 'confirmed',
+            'price_cents' => 15_000,
+            'created_at' => $now->copy()->subMinutes($i),
+            'updated_at' => $now->copy()->subMinutes($i),
+        ];
+    }
+
+    if ($rows !== []) {
+        DB::table('bookings')->insert($rows);
+    }
+
+    return $tenant;
 }
