@@ -2,11 +2,16 @@
 
 namespace App\Models;
 
+use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Booking extends Model
 {
+    use HasFactory;
+
     protected $guarded = [];
 
     protected function casts(): array
@@ -36,5 +41,14 @@ class Booking extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function scopeOverlapping(Builder $query, int $staffId, CarbonInterface $start, CarbonInterface $end): Builder
+    {
+        return $query
+            ->where('staff_id', $staffId)
+            ->where('starts_at', '<', $end)
+            ->where('ends_at', '>', $start)
+            ->where('status', '!=', 'cancelled');
     }
 }

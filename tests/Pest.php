@@ -9,6 +9,8 @@ use Tests\TestCase;
 
 pest()->extend(TestCase::class)->in('Feature', 'Database');
 
+require_once __DIR__.'/Feature/Concurrency/helpers.php';
+
 expect()->extend('toRunQueries', function (int $expected) {
     $count = 0;
     DB::listen(function () use (&$count) {
