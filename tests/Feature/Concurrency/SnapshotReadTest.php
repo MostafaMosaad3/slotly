@@ -60,23 +60,3 @@ it('lets an UPDATE change a row the transaction could not see', function () {
     expect($affected)->toBe(1)
         ->and($held()->where('status', 'released')->count())->toBe(1);
 });
-
-it('allows a double booking with a plain availability check (fixed on Day 2)', function () {
-    $this->a->beginTransaction();
-    $this->b->beginTransaction();
-
-    $freeForA = overlappingCount($this->a, $this->staff, $this->slot) === 0;
-    $freeForB = overlappingCount($this->b, $this->staff, $this->slot) === 0;
-
-    if ($freeForA) {
-        $this->a->table('bookings')->insert(bookingRow($this->staff, $this->slot));
-    }
-    if ($freeForB) {
-        $this->b->table('bookings')->insert(bookingRow($this->staff, $this->slot));
-    }
-
-    $this->a->commit();
-    $this->b->commit();
-
-    expect(overlappingCount(DB::connection(), $this->staff, $this->slot))->toBe(2);
-});

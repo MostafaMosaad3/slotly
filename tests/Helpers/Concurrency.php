@@ -3,6 +3,7 @@
 use App\Models\Booking;
 use App\Models\Staff;
 use Illuminate\Database\Connection;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -33,4 +34,19 @@ function bookingRow(Staff $staff, array $slot): array
         'ends_at' => $slot[1],
         'status' => 'confirmed',
     ])->getAttributes();
+}
+
+function expectLockWait(Connection $connection, callable $fn): void
+{
+    $connection->statement('SET SESSION innodb_lock_wait_timeout = 1');
+
+    try {
+        $fn();
+    } catch (QueryException $e) {
+        expect($e->errorInfo[1])->toBe(1205);
+
+        return;
+    }
+
+    test()->fail('Expected the statement to wait for a lock, but it went through.');
 }

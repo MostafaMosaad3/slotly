@@ -45,8 +45,11 @@ class Booking extends Model
 
     public function scopeOverlapping(Builder $query, int $staffId, CarbonInterface $start, CarbonInterface $end): Builder
     {
+        $earliestStart = $start->copy()->subMinutes(config('scheduling.max_booking_minutes'));
+
         return $query
             ->where('staff_id', $staffId)
+            ->where('starts_at', '>', $earliestStart)
             ->where('starts_at', '<', $end)
             ->where('ends_at', '>', $start)
             ->where('status', '!=', 'cancelled');
