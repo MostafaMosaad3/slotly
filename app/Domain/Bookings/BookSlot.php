@@ -11,12 +11,14 @@ use Illuminate\Support\Facades\DB;
 
 final class BookSlot
 {
+    public function __construct(private StaffLocks $locks) {}
+
     public function handle(Staff $staff, Service $service, Customer $customer, CarbonInterface $start): Booking
     {
         $end = $start->copy()->addMinutes($service->duration_minutes);
 
         return DB::transaction(function () use ($staff, $service, $customer, $start, $end) {
-            Staff::whereKey($staff->id)->lockForUpdate()->firstOrFail();
+            $this->locks->lock($staff->id);
 
             // current read on purpose: a plain read could reuse a snapshot taken before the staff lock
             if (Booking::overlapping($staff->id, $start, $end)->lockForUpdate()->exists()) {

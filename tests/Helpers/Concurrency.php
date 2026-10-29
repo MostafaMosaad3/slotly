@@ -6,6 +6,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Process\Process;
 
 function connectionB(): Connection
 {
@@ -49,4 +50,42 @@ function expectLockWait(Connection $connection, callable $fn): void
     }
 
     test()->fail('Expected the statement to wait for a lock, but it went through.');
+}
+
+function startFixture(string $script, array $args): Process
+{
+    $db = config('database.connections.mysql');
+
+    $process = new Process(
+        [PHP_BINARY, base_path("tests/Fixtures/{$script}"), ...array_map('strval', $args)],
+        env: [
+            'DB_DSN' => "mysql:host={$db['host']};port={$db['port']};dbname={$db['database']}",
+            'DB_USERNAME' => $db['username'],
+            'DB_PASSWORD' => $db['password'],
+        ],
+    );
+    $process->start();
+
+    return $process;
+}
+
+function startLockPair(int $first, int $second, int $holdMs = 300): Process
+{
+    return startFixture('lock-staff-pair.php', [$first, $second, $holdMs]);
+}
+
+function waitForOutput(Process $process, string $needle, int $timeoutMs = 5000): void
+{
+    $deadline = microtime(true) + $timeoutMs / 1000;
+    while (! str_contains($process->getOutput(), $needle)) {
+        if (microtime(true) > $deadline) {
+            test()->fail("Process never printed '{$needle}'. Output: ".$process->getOutput().$process->getErrorOutput());
+        }
+        usleep(10_000);
+    }
+}
+
+function lastLine(Process $process): string
+{
+    return trim(last(explode("\n", trim($process->getOutput()))));
 }

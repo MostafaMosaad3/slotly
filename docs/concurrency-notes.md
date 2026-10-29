@@ -81,3 +81,43 @@ The check only looks back `scheduling.max_booking_minutes` (240). A booking long
 `App\Domain\Bookings\BookSlot`: in `DB::transaction(attempts: 3)` lock the staff row, then the overlap check `FOR UPDATE` (current read), throw `SlotTaken` if busy, insert. Same-staff requests queue on the staff row while holding nothing, so they can't deadlock each other. Two range checks on an empty slot can: gap locks are compatible, inserts into a locked gap aren't (`LockMapTest`).
 
 The Day 1 "allows a double booking" test was deleted; `LockMapTest` "serializes two bookings…" replaces it with final count 1.
+
+## Deadlock — opposite staff order (Day 3)
+
+Database `slotly_load_test`, MySQL 9.1.0. Two OS processes run `tests/Fixtures/lock-staff-pair.php`: A locks staff 120 then 121 (holds 600 ms), B starts 200 ms later and locks 121 then 120. A printed `ok`, B printed `deadlock` (1213). `SHOW ENGINE INNODB STATUS`, trimmed:
+
+```
+*** (1) TRANSACTION:
+TRANSACTION 7535573, ACTIVE 1 sec starting index read
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s)
+SELECT id FROM staff WHERE id = '121' FOR UPDATE
+*** (1) HOLDS THE LOCK(S):
+... index PRIMARY of table `slotly_load_test`.`staff` trx id 7535573 lock_mode X locks rec but not gap
+ 0: len 8; hex 0000000000000078; ...   4: ... asc Staff 120;;
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+... index PRIMARY of table `slotly_load_test`.`staff` trx id 7535573 lock_mode X locks rec but not gap waiting
+ 0: len 8; hex 0000000000000079; ...   4: ... asc Staff 121;;
+
+*** (2) TRANSACTION:
+TRANSACTION 7535574, ACTIVE 0 sec starting index read
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s)
+SELECT id FROM staff WHERE id = '120' FOR UPDATE
+*** (2) HOLDS THE LOCK(S):
+... lock_mode X locks rec but not gap
+ 0: len 8; hex 0000000000000079; ...   4: ... asc Staff 121;;
+*** (2) WAITING FOR THIS LOCK TO BE GRANTED:
+... lock_mode X locks rec but not gap waiting
+ 0: len 8; hex 0000000000000078; ...   4: ... asc Staff 120;;
+
+*** WE ROLL BACK TRANSACTION (2)
+```
+
+Reading it:
+
+- Transaction (1) is A, (2) is B. The query shown is the one each was **waiting on**, not the first one it ran.
+- Field 0 of the record is the primary key: `0x78` = 120, `0x79` = 121. Field 4 confirms it (`Staff 120`).
+- Lock mode `X locks rec but not gap` on `PRIMARY`: an equality lookup on a unique key locks only the record, no gap.
+- Cycle: (1) holds 120, wants 121; (2) holds 121, wants 120.
+- Victim: (2). Both weighed the same (2 row locks, 3 lock structs, nothing modified), so size didn't decide it. I expected B: its request is the one that closed the cycle. Which side loses can flip between runs, which is why `DeadlockTest` asserts "one deadlock, one ok", not who.
+
+Fix: `App\Domain\Bookings\StaffLocks::lock(...$ids)` sorts the ids and locks them in one `ORDER BY id … FOR UPDATE`. Every booking action (`BookSlot`, `RescheduleBooking`) locks staff through it, so all transactions climb the same id ladder and the one that waits holds nothing the other needs. `DeadlockTest` reproduces the cycle with a real second process and shows it gone with id order. `attempts: 3` stays for deadlocks this rule doesn't cover; `TransactionRetryTest` pins the retry.
