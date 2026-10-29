@@ -16,7 +16,10 @@ class Staff extends Model
 
     protected function casts(): array
     {
-        return ['active' => 'boolean'];
+        return [
+            'active' => 'boolean',
+            'upcoming_bookings_count' => 'integer',
+        ];
     }
 
     public function tenant(): BelongsTo

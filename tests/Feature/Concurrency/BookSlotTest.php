@@ -34,6 +34,22 @@ it('refuses an overlapping slot for the same staff member', function () {
         ->and(Booking::count())->toBe(1);
 });
 
+it('counts the booking on the staff row', function () {
+    app(BookSlot::class)->handle($this->staff, $this->service, $this->customer, Carbon::parse('2026-11-02 10:00'));
+    app(BookSlot::class)->handle($this->staff, $this->service, $this->customer, Carbon::parse('2026-11-02 12:00'));
+
+    expect($this->staff->fresh()->upcoming_bookings_count)->toBe(2);
+});
+
+it('does not count a refused booking', function () {
+    $book = fn (string $at) => app(BookSlot::class)->handle($this->staff, $this->service, $this->customer, Carbon::parse("2026-11-02 {$at}"));
+
+    $book('10:00');
+
+    expect(fn () => $book('10:30'))->toThrow(SlotTaken::class)
+        ->and($this->staff->fresh()->upcoming_bookings_count)->toBe(1);
+});
+
 it('misses a booking longer than max_booking_minutes, so longer bookings must be rejected', function () {
     Booking::factory()->for($this->staff)->create(['starts_at' => '2026-11-02 05:00', 'ends_at' => '2026-11-02 10:30']);
 

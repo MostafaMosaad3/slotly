@@ -25,7 +25,7 @@ final class BookSlot
                 throw new SlotTaken($staff->id, $start);
             }
 
-            return Booking::create([
+            $booking = Booking::create([
                 'tenant_id' => $staff->tenant_id,
                 'service_id' => $service->id,
                 'staff_id' => $staff->id,
@@ -35,6 +35,11 @@ final class BookSlot
                 'status' => 'confirmed',
                 'price_cents' => $service->price_cents,
             ]);
+
+            // last statement: the X lock on the staff row is already held, so this adds no new wait
+            Staff::whereKey($staff->id)->increment('upcoming_bookings_count');
+
+            return $booking;
         }, attempts: 3);
     }
 }

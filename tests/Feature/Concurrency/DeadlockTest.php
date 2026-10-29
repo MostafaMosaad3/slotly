@@ -18,6 +18,8 @@ afterEach(function () {
     while (DB::transactionLevel() > 0) {
         DB::rollBack();
     }
+
+    $this->truncateDatabaseTables();
 });
 
 function lockStaff(int $id): string

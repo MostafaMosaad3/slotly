@@ -121,3 +121,22 @@ Reading it:
 - Victim: (2). Both weighed the same (2 row locks, 3 lock structs, nothing modified), so size didn't decide it. I expected B: its request is the one that closed the cycle. Which side loses can flip between runs, which is why `DeadlockTest` asserts "one deadlock, one ok", not who.
 
 Fix: `App\Domain\Bookings\StaffLocks::lock(...$ids)` sorts the ids and locks them in one `ORDER BY id … FOR UPDATE`. Every booking action (`BookSlot`, `RescheduleBooking`) locks staff through it, so all transactions climb the same id ladder and the one that waits holds nothing the other needs. `DeadlockTest` reproduces the cycle with a real second process and shows it gone with id order. `attempts: 3` stays for deadlocks this rule doesn't cover; `TransactionRetryTest` pins the retry.
+
+## Lost updates — the counter hammer (Day 4)
+
+`tests/Fixtures/counter-hammer.php`, two processes in parallel on one staff row, `slotly_testing`, MySQL 9.1.0, autocommit statements.
+
+| mode | per process | expected | got |
+|---|---|---|---|
+| rmw | 200 | 400 | 389, 400, 400 |
+| rmw | 2000 | 4000 | 3983, 3945, 3990 |
+| atomic | 200 / 2000 | 400 / 4000 | 400 / 4000 |
+
+`rmw` loses 10–55 per 4000 and sometimes nothing at 200: the loss only happens when one process's SELECT lands between the other's SELECT and UPDATE, so it depends on timing. That's why the test asserts only the `atomic` total. No error is ever raised; the UPDATE's X lock serializes the writes but not the stale value they carry.
+
+Decisions:
+
+- `upcoming_bookings_count` = confirmed bookings that haven't started. `BookSlot` increments it as its last statement (the staff row is already locked); `CancelBooking` decrements only for a booking that hadn't started.
+- `bookings:complete-past` does **not** decrement. A booking stops being "upcoming" when it starts, not when it completes, so no write path can keep the counter exact as time passes. `staff:recount-bookings` (nightly 03:00, `UTC_TIMESTAMP()`) is the source of truth; the number of rows it changes is the drift metric.
+- `CancelBooking` is compare-and-set (`WHERE status = 'confirmed'`), and bumps `version` so a notes form opened before the cancel can't save over it. Removing the status guard fails three `CancelBookingTest` cases.
+- `UpdateBookingNotes` is one conditional statement on `version`, no transaction or lock.

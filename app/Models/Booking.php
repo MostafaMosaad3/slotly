@@ -19,7 +19,9 @@ class Booking extends Model
         return [
             'starts_at' => 'datetime',
             'ends_at' => 'datetime',
+            'cancelled_at' => 'datetime',
             'price_cents' => 'integer',
+            'version' => 'integer',
         ];
     }
 

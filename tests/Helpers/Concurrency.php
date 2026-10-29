@@ -89,3 +89,8 @@ function lastLine(Process $process): string
 {
     return trim(last(explode("\n", trim($process->getOutput()))));
 }
+
+function startCounterHammer(int $staffId, string $mode, int $n): Process
+{
+    return startFixture('counter-hammer.php', [$staffId, $mode, $n]);
+}
